@@ -4,9 +4,13 @@
   "description": "VS Code extension for building ADK-Rust agents.",
   "version": "0.0.1",
   "publisher": "zavora-ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zavora-ai/adk-rust-extension.git"
+  },
   "icon": "resources/crab.png",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.96.0"
   },
   "categories": [
     "Programming Languages",
