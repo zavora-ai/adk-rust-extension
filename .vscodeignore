@@ -1,0 +1,13 @@
+**/*.ts
+**/*.map
+**/node_modules/**
+.vscode/**
+src/**
+tsconfig.json
+npm-debug.log
+out/**
+.mocharc.json
+eslint.config.mjs
+.draft/**
+.kiro/**
+.vscode-test/**

@@ -1,0 +1,246 @@
+{
+  "name": "adk-rust-extension",
+  "displayName": "ADK Rust",
+  "description": "VS Code extension for building ADK-Rust agents.",
+  "version": "0.0.1",
+  "publisher": "zavora-ai",
+  "icon": "resources/crab.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:**/Cargo.toml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "adkRust.openStudio",
+        "title": "ADK Rust: Open Studio",
+        "icon": "$(radio-tower)"
+      },
+      {
+        "command": "adkRust.createProject",
+        "title": "ADK Rust: Create Project",
+        "icon": "$(add)"
+      },
+      {
+        "command": "adkRust.build",
+        "title": "ADK Rust: Build Project",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "adkRust.run",
+        "title": "ADK Rust: Run Project",
+        "icon": "$(play)"
+      },
+      {
+        "command": "adkRust.checkEnvironment",
+        "title": "ADK Rust: Check Environment",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "adkRust.viewLogs",
+        "title": "ADK Rust: View Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "adkRust.refreshProjects",
+        "title": "Refresh ADK Projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "adkRust.configureApiKeys",
+        "title": "ADK Rust: Configure API Keys",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "adkRust.openSettings",
+        "title": "ADK Rust: Open Settings",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "adk-rust",
+          "title": "ADK Rust",
+          "icon": "resources/crab.svg"
+        }
+      ]
+    },
+    "views": {
+      "adk-rust": [
+        {
+          "id": "adkProjects",
+          "name": "ADK Projects",
+          "contextualTitle": "ADK Rust Projects"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "adkProjects",
+        "contents": "No ADK projects found in workspace.\n[Create Project](command:adkRust.createProject)\n[Check Environment](command:adkRust.checkEnvironment)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "adkRust.refreshProjects",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "adkRust.createProject",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "adkRust.checkEnvironment",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "adkRust.configureApiKeys",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "adkRust.openSettings",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "adkRust.build",
+          "when": "view == adkProjects && viewItem == adkProject",
+          "group": "inline"
+        },
+        {
+          "command": "adkRust.run",
+          "when": "view == adkProjects && viewItem == adkProject",
+          "group": "inline"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "adkRust.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "resourceExtname == .rs"
+      }
+    ],
+    "configuration": {
+      "title": "ADK Rust",
+      "properties": {
+        "adkRust.studioPort": {
+          "type": "number",
+          "default": 3000,
+          "description": "Port number for the ADK Studio server.",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "adkRust.defaultTemplate": {
+          "type": "string",
+          "default": "simple-chat",
+          "enum": [
+            "simple-chat",
+            "tool-using-agent",
+            "multi-agent-workflow",
+            "graph-workflow"
+          ],
+          "enumDescriptions": [
+            "Basic conversational agent with LLM integration",
+            "Agent with function tools and Google Search",
+            "Sequential and parallel agent orchestration",
+            "LangGraph-style workflow with state management"
+          ],
+          "description": "Default template for new ADK projects."
+        },
+        "adkRust.adkStudioPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Custom path to the adk-studio binary. Leave empty to use PATH."
+        },
+        "adkRust.cargoPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Custom path to the cargo binary. Leave empty to use PATH."
+        },
+        "adkRust.rustcPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Custom path to the rustc binary. Leave empty to use PATH."
+        },
+        "adkRust.autoStartStudio": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start the ADK Studio server when the extension activates."
+        },
+        "adkRust.verbosity": {
+          "type": "string",
+          "default": "normal",
+          "enum": [
+            "quiet",
+            "normal",
+            "verbose"
+          ],
+          "enumDescriptions": [
+            "Show only errors",
+            "Show errors and important information",
+            "Show all messages including debug information"
+          ],
+          "description": "Output channel verbosity level."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "test": "mocha --require ts-node/register 'src/**/*.test.ts'",
+    "test:watch": "mocha --require ts-node/register --watch --watch-extensions ts 'src/**/*.test.ts'",
+    "test:integration": "node ./out/test/runTest.js",
+    "pretest": "npm run compile && npm run bundle"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.96.0",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.18.0",
+    "fast-check": "^3.23.0",
+    "glob": "^11.0.0",
+    "mocha": "11.3.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  }
+}
