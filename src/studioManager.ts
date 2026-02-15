@@ -7,7 +7,7 @@
  */
 
 import * as vscode from 'vscode';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -125,6 +125,51 @@ export function getNonce(): string {
   crypto.getRandomValues(array);
   return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
+/**
+ * VS Code CSS variables to synchronize with the Studio iframe.
+ * These are read from the webview's computed styles and posted
+ * to the iframe via postMessage on theme changes.
+ */
+export const THEME_VARIABLES: readonly string[] = [
+  // Core surfaces
+  '--vscode-editor-background',
+  '--vscode-editor-foreground',
+  '--vscode-sideBar-background',
+  '--vscode-sideBar-foreground',
+  '--vscode-panel-background',
+  '--vscode-panel-border',
+  // Interactive elements
+  '--vscode-button-background',
+  '--vscode-button-foreground',
+  '--vscode-button-hoverBackground',
+  '--vscode-button-secondaryBackground',
+  '--vscode-button-secondaryForeground',
+  '--vscode-input-background',
+  '--vscode-input-foreground',
+  '--vscode-input-border',
+  '--vscode-input-placeholderForeground',
+  '--vscode-dropdown-background',
+  '--vscode-dropdown-foreground',
+  '--vscode-dropdown-border',
+  // Feedback
+  '--vscode-focusBorder',
+  '--vscode-errorForeground',
+  '--vscode-progressBar-background',
+  // Text
+  '--vscode-foreground',
+  '--vscode-descriptionForeground',
+  '--vscode-textLink-foreground',
+  '--vscode-textLink-activeForeground',
+  '--vscode-textCodeBlock-background',
+  // Borders & widgets
+  '--vscode-editorWidget-background',
+  '--vscode-editorWidget-border',
+  '--vscode-widget-shadow',
+  // List / tree
+  '--vscode-list-hoverBackground',
+  '--vscode-list-activeSelectionBackground',
+  '--vscode-list-activeSelectionForeground',
+];
 
 /**
  * Manages the ADK Studio server lifecycle and VS Code webview integration.
@@ -137,6 +182,7 @@ export function getNonce(): string {
 export class StudioManager implements vscode.Disposable {
   private serverProcess: ChildProcess | null = null;
   private webviewPanel: vscode.WebviewPanel | null = null;
+  private dismissedInSession: boolean = false;
   private config: StudioConfig;
   private readonly context: vscode.ExtensionContext;
   private readonly outputChannel: vscode.OutputChannel;
@@ -168,6 +214,21 @@ export class StudioManager implements vscode.Disposable {
   updateConfig(config: Partial<StudioConfig>): void {
     this.config = { ...this.config, ...config };
     this.serverStatus.port = this.config.port;
+  }
+
+  /**
+   * Checks whether the adk-studio binary is available on PATH or at the configured path.
+   *
+   * @returns `true` if the binary can be found and executed with `--version`
+   */
+  isBinaryInstalled(): boolean {
+    const binary = this.config.binaryPath || 'adk-studio';
+    try {
+      execFileSync(binary, ['--version'], { stdio: 'ignore', timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -375,9 +436,11 @@ export class StudioManager implements vscode.Disposable {
       }
     );
 
-    // Set webview content
+    // Set webview content — only show README fallback when binary is not installed
     const serverUrl = this.serverStatus.url || `http://localhost:${this.config.port}`;
-    this.webviewPanel.webview.html = this.getWebviewContent(serverUrl);
+    const showReadme = !this.serverStatus.running && !this.isBinaryInstalled();
+    const readmeHtml = showReadme ? readReadmeAsHtml(this.context.extensionUri) : null;
+    this.webviewPanel.webview.html = this.getWebviewContent(serverUrl, readmeHtml ?? undefined);
 
     // Handle messages from webview
     this.webviewPanel.webview.onDidReceiveMessage(
@@ -390,6 +453,7 @@ export class StudioManager implements vscode.Disposable {
     this.webviewPanel.onDidDispose(
       () => {
         this.webviewPanel = null;
+        this.dismissedInSession = true;
         // Stop server when webview is closed
         this.stopServer();
       },
@@ -401,134 +465,398 @@ export class StudioManager implements vscode.Disposable {
   }
 
   /**
+   * Auto-opens the Studio webview as an editor tab beside the current editor.
+   *
+   * Unlike `createWebviewPanel()`, this opens with `ViewColumn.Beside` to avoid
+   * replacing the user's current editor. If the user has already dismissed the
+   * Studio panel in this session, returns `null` to respect their preference.
+   * If a panel already exists, it is revealed and returned.
+   *
+   * @returns The webview panel, or `null` if dismissed in this session
+   *
+   * @example
+   * const panel = await studioManager.autoOpenStudio();
+   * if (panel) {
+   *   messageBus.registerStudio(panel);
+   * }
+   */
+  async autoOpenStudio(): Promise<vscode.WebviewPanel | null> {
+    if (this.dismissedInSession) {
+      this.log('Studio dismissed in this session, skipping auto-open');
+      return null;
+    }
+
+    if (this.webviewPanel) {
+      this.webviewPanel.reveal();
+      return this.webviewPanel;
+    }
+
+    this.webviewPanel = vscode.window.createWebviewPanel(
+      'adkStudio',
+      'ADK Studio',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        // SECURITY: Restrict to extension resources and localhost
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.context.extensionUri, 'media'),
+          vscode.Uri.joinPath(this.context.extensionUri, 'dist'),
+        ],
+      }
+    );
+
+    // Set webview content — only show README fallback when binary is not installed
+    const serverUrl = this.serverStatus.url || `http://localhost:${this.config.port}`;
+    const showReadme = !this.serverStatus.running && !this.isBinaryInstalled();
+    const readmeHtml = showReadme ? readReadmeAsHtml(this.context.extensionUri) : null;
+    this.webviewPanel.webview.html = this.getWebviewContent(serverUrl, readmeHtml ?? undefined);
+
+    // Handle messages from webview
+    this.webviewPanel.webview.onDidReceiveMessage(
+      (message: WebviewMessage) => this.handleWebviewMessage(message),
+      undefined,
+      this.context.subscriptions
+    );
+
+    // Handle panel disposal — mark dismissed but do NOT stop the server
+    this.webviewPanel.onDidDispose(
+      () => {
+        this.webviewPanel = null;
+        this.dismissedInSession = true;
+      },
+      undefined,
+      this.context.subscriptions
+    );
+
+    return this.webviewPanel;
+  }
+
+  /**
+   * Returns whether the user has dismissed the Studio panel in this session.
+   *
+   * @returns `true` if the Studio panel was closed by the user during this session
+   */
+  isDismissedInSession(): boolean {
+    return this.dismissedInSession;
+  }
+
+  /**
+   * Marks the Studio panel as dismissed for the current session.
+   *
+   * After calling this, `autoOpenStudio()` will return `null` until the
+   * session is reset (extension reactivation).
+   */
+  markDismissed(): void {
+    this.dismissedInSession = true;
+  }
+
+  /**
    * Generates the HTML content for the webview with proper CSP.
    *
    * @param serverUrl - URL of the ADK Studio server
    * @returns HTML string for the webview
    */
-  getWebviewContent(serverUrl: string): string {
-    const nonce = getNonce();
+  getWebviewContent(serverUrl: string, readmeHtml?: string): string {
+      const nonce = getNonce();
+      const serverRunning = this.serverStatus.running;
 
-    // SECURITY: Content Security Policy restricts what can be loaded
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="
-    default-src 'none';
-    style-src 'unsafe-inline';
-    script-src 'nonce-${nonce}';
-    connect-src ${serverUrl};
-    frame-src ${serverUrl};
-  ">
-  <title>ADK Studio</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-    }
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
-    }
-    .loading {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      color: var(--vscode-foreground, #333);
-    }
-    .loading.hidden {
-      display: none;
-    }
-    .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid var(--vscode-progressBar-background, #0078d4);
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    .error {
-      color: var(--vscode-errorForeground, #f44336);
-      text-align: center;
-      padding: 20px;
-    }
-    .error button {
-      margin-top: 10px;
-      padding: 8px 16px;
-      background: var(--vscode-button-background, #0078d4);
-      color: var(--vscode-button-foreground, #fff);
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-  </style>
-</head>
-<body>
-  <div id="loading" class="loading">
-    <div class="spinner"></div>
-    <p>Loading ADK Studio...</p>
-  </div>
-  <div id="error" class="error" style="display: none;">
-    <p>Failed to connect to ADK Studio server.</p>
-    <button onclick="retryConnection()">Retry</button>
-  </div>
-  <iframe id="studio-frame" src="${serverUrl}" style="display: none;"></iframe>
-  
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const iframe = document.getElementById('studio-frame');
-    const loading = document.getElementById('loading');
-    const error = document.getElementById('error');
-    
-    // Notify extension that webview is ready
-    vscode.postMessage({ type: 'ready' });
-    
-    iframe.onload = function() {
-      loading.style.display = 'none';
-      error.style.display = 'none';
-      iframe.style.display = 'block';
-    };
-    
-    iframe.onerror = function() {
-      loading.style.display = 'none';
-      error.style.display = 'block';
-    };
-    
-    function retryConnection() {
-      loading.style.display = 'flex';
-      error.style.display = 'none';
-      iframe.src = '${serverUrl}';
-    }
-    
-    // Handle messages from the iframe
-    window.addEventListener('message', function(event) {
-      // Only accept messages from the studio server
-      if (event.origin !== '${serverUrl.replace(/\/$/, '')}') {
-        return;
+      // When the server isn't running and we have README content, show that instead
+      if (!serverRunning && readmeHtml) {
+        return `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'none';
+      style-src 'unsafe-inline';
+      script-src 'nonce-${nonce}';
+    ">
+    <title>ADK Studio — Setup</title>
+    <style>
+      :root { color-scheme: light dark; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow-y: auto;
+        font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+        font-size: var(--vscode-font-size, 13px);
+        color: var(--vscode-foreground);
+        background-color: var(--vscode-editor-background);
       }
-      
-      // Forward to extension
-      vscode.postMessage(event.data);
-    });
-  </script>
-</body>
-</html>`;
-  }
+      .readme-container {
+        max-width: 780px;
+        margin: 0 auto;
+        padding: 24px 32px;
+        line-height: 1.6;
+      }
+      h1, h2, h3 { color: var(--vscode-foreground); margin-top: 1.5em; }
+      h1 { font-size: 1.8em; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); padding-bottom: 8px; }
+      h2 { font-size: 1.4em; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); padding-bottom: 6px; }
+      h3 { font-size: 1.15em; }
+      code {
+        font-family: var(--vscode-editor-fontFamily, 'Menlo', monospace);
+        font-size: 0.9em;
+        background-color: var(--vscode-textCodeBlock-background);
+        color: var(--vscode-foreground);
+        padding: 2px 5px;
+        border-radius: 3px;
+      }
+      pre {
+        background-color: var(--vscode-textCodeBlock-background);
+        padding: 12px 16px;
+        border-radius: 4px;
+        overflow-x: auto;
+      }
+      pre code { background: none; padding: 0; }
+      a { color: var(--vscode-textLink-foreground); }
+      a:hover { color: var(--vscode-textLink-activeForeground); }
+      table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+      th, td {
+        border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+        padding: 6px 10px;
+        text-align: left;
+      }
+      th { background-color: var(--vscode-editorWidget-background); color: var(--vscode-foreground); }
+      blockquote {
+        border-left: 3px solid var(--vscode-textBlockQuote-border);
+        margin: 12px 0;
+        padding: 4px 16px;
+        color: var(--vscode-descriptionForeground);
+        background-color: var(--vscode-textBlockQuote-background);
+      }
+      ul, ol { padding-left: 24px; }
+      li { margin: 4px 0; }
+      img { max-width: 100%; border-radius: 4px; }
+      hr { border: none; border-top: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border)); margin: 24px 0; }
+      .banner {
+        background-color: var(--vscode-inputValidation-infoBackground, var(--vscode-editorWidget-background));
+        border: 1px solid var(--vscode-inputValidation-infoBorder, var(--vscode-focusBorder));
+        border-radius: 6px;
+        padding: 16px 20px;
+        margin-bottom: 24px;
+        text-align: center;
+        color: var(--vscode-foreground);
+      }
+      .banner p { margin: 4px 0; }
+      .banner code { font-size: 1em; }
+    </style>
+  </head>
+  <body>
+    <div class="readme-container">
+      <div class="banner">
+        <p><strong>ADK Studio is not running.</strong></p>
+        <p>Install it with: <code>cargo install adk-studio</code></p>
+        <p>Then reload this window or run <strong>ADK Rust: Open Studio</strong>.</p>
+      </div>
+      ${readmeHtml}
+    </div>
+    <script nonce="${nonce}">
+      const vscode = acquireVsCodeApi();
+      vscode.postMessage({ type: 'ready' });
+    </script>
+  </body>
+  </html>`;
+      }
+
+      // SECURITY: Content Security Policy restricts what can be loaded
+      return `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'none';
+      style-src 'unsafe-inline';
+      script-src 'nonce-${nonce}';
+      connect-src ${serverUrl};
+      frame-src ${serverUrl};
+    ">
+    <title>ADK Studio</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: none;
+      }
+      .loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: var(--vscode-foreground, #333);
+      }
+      .loading.hidden {
+        display: none;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--vscode-progressBar-background, #0078d4);
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .error {
+        color: var(--vscode-errorForeground, #f44336);
+        text-align: center;
+        padding: 20px;
+      }
+      .error button {
+        margin-top: 10px;
+        padding: 8px 16px;
+        background: var(--vscode-button-background, #0078d4);
+        color: var(--vscode-button-foreground, #fff);
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading ADK Studio...</p>
+    </div>
+    <div id="error" class="error" style="display: none;">
+      <p>Failed to connect to ADK Studio server.</p>
+      <button onclick="retryConnection()">Retry</button>
+    </div>
+    <iframe id="studio-frame" style="display: none;"></iframe>
+
+    <script nonce="${nonce}">
+      const vscode = acquireVsCodeApi();
+      const iframe = document.getElementById('studio-frame');
+      const loading = document.getElementById('loading');
+      const error = document.getElementById('error');
+      const BASE_URL = '${serverUrl}';
+
+      // --- Theme detection ---
+
+      /**
+       * Derives the theme kind from the VS Code body class list.
+       * VS Code sets one of: vscode-dark, vscode-light,
+       * vscode-high-contrast, vscode-high-contrast-light.
+       */
+      function detectThemeKind() {
+        const cl = document.body.classList;
+        if (cl.contains('vscode-high-contrast')) return 'high-contrast-dark';
+        if (cl.contains('vscode-high-contrast-light')) return 'high-contrast-light';
+        if (cl.contains('vscode-dark')) return 'dark';
+        return 'light';
+      }
+
+      const THEME_VARIABLES = ${JSON.stringify([...THEME_VARIABLES])};
+
+      function getThemeVariables() {
+        const styles = getComputedStyle(document.documentElement);
+        const variables = {};
+        THEME_VARIABLES.forEach(function(name) {
+          variables[name] = styles.getPropertyValue(name).trim();
+        });
+        return variables;
+      }
+
+      /** Build the studio URL with a theme query parameter. */
+      function buildStudioUrl(themeKind) {
+        var sep = BASE_URL.indexOf('?') === -1 ? '?' : '&';
+        return BASE_URL + sep + 'theme=' + encodeURIComponent(themeKind);
+      }
+
+      /** Post the full theme payload to the iframe. */
+      function sendThemeToIframe() {
+        if (iframe && iframe.contentWindow) {
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'themeChanged',
+              themeKind: detectThemeKind(),
+              variables: getThemeVariables()
+            }, '*');
+          } catch (e) {
+            // iframe may not be loaded yet — ignore silently
+          }
+        }
+      }
+
+      // --- Lifecycle ---
+
+      // Set initial iframe src with theme param
+      var currentTheme = detectThemeKind();
+      iframe.src = buildStudioUrl(currentTheme);
+
+      // Notify extension that webview is ready
+      vscode.postMessage({ type: 'ready' });
+
+      iframe.onload = function() {
+        loading.style.display = 'none';
+        error.style.display = 'none';
+        iframe.style.display = 'block';
+        sendThemeToIframe();
+      };
+
+      iframe.onerror = function() {
+        loading.style.display = 'none';
+        error.style.display = 'block';
+      };
+
+      function retryConnection() {
+        loading.style.display = 'flex';
+        error.style.display = 'none';
+        iframe.src = buildStudioUrl(detectThemeKind());
+      }
+
+      // Handle messages from the iframe
+      window.addEventListener('message', function(event) {
+        // Only accept messages from the studio server
+        if (event.origin !== '${serverUrl.replace(/\/$/, '')}') {
+          return;
+        }
+
+        // Forward to extension
+        vscode.postMessage(event.data);
+      });
+
+      // Watch for VS Code theme changes (body class mutation)
+      var themeObserver = new MutationObserver(function(mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+          if (mutations[i].type === 'attributes' && mutations[i].attributeName === 'class') {
+            var newTheme = detectThemeKind();
+            if (newTheme !== currentTheme) {
+              currentTheme = newTheme;
+              // Reload iframe with updated theme param so the studio
+              // app can read it from the URL on initial render.
+              iframe.src = buildStudioUrl(currentTheme);
+            } else {
+              // Same kind but variables may have changed (e.g. custom theme)
+              sendThemeToIframe();
+            }
+            break;
+          }
+        }
+      });
+      themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    </script>
+  </body>
+  </html>`;
+    }
 
   /**
    * Handles messages received from the webview.
@@ -716,4 +1044,166 @@ export class StudioManager implements vscode.Disposable {
     this.webviewPanel?.dispose();
     this.outputChannel.dispose();
   }
+}
+
+/**
+ * Reads the extension README.md and converts it to basic HTML.
+ *
+ * Uses a minimal markdown-to-HTML conversion (headings, code blocks,
+ * inline code, links, bold, lists, tables, blockquotes, paragraphs).
+ * No external dependencies required.
+ *
+ * @param extensionUri - The extension's root URI
+ * @returns HTML string, or null if the README cannot be read
+ */
+function readReadmeAsHtml(extensionUri: vscode.Uri): string | null {
+  try {
+    const readmePath = vscode.Uri.joinPath(extensionUri, 'README.md').fsPath;
+    const md = fs.readFileSync(readmePath, 'utf-8');
+    return markdownToHtml(md);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Minimal markdown-to-HTML converter. Handles the subset of markdown
+ * used in the extension README without requiring a third-party library.
+ *
+ * @param md - Raw markdown string
+ * @returns HTML string
+ */
+function markdownToHtml(md: string): string {
+  const lines = md.split('\n');
+  const html: string[] = [];
+  let inCodeBlock = false;
+  let inTable = false;
+  let inList = false;
+  let listType: 'ul' | 'ol' = 'ul';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Fenced code blocks
+    if (line.trimStart().startsWith('```')) {
+      if (inCodeBlock) {
+        html.push('</code></pre>');
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+        html.push('<pre><code>');
+      }
+      continue;
+    }
+    if (inCodeBlock) {
+      html.push(escapeHtmlChars(line));
+      continue;
+    }
+
+    // Close list if current line is not a list item
+    const isListItem = /^\s*[-*]\s/.test(line) || /^\s*\d+\.\s/.test(line);
+    if (inList && !isListItem && line.trim() !== '') {
+      html.push(listType === 'ul' ? '</ul>' : '</ol>');
+      inList = false;
+    }
+
+    // Close table if current line is not a table row
+    const isTableRow = line.trim().startsWith('|') && line.trim().endsWith('|');
+    if (inTable && !isTableRow) {
+      html.push('</table>');
+      inTable = false;
+    }
+
+    // Empty line
+    if (line.trim() === '') {
+      continue;
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    // Table rows
+    if (isTableRow) {
+      const cells = line.split('|').filter(c => c.trim() !== '');
+      // Skip separator rows (|---|---|)
+      if (cells.every(c => /^[\s-:]+$/.test(c))) {
+        continue;
+      }
+      if (!inTable) {
+        inTable = true;
+        html.push('<table>');
+        // First row is header
+        html.push('<tr>' + cells.map(c => `<th>${inlineFormat(c.trim())}</th>`).join('') + '</tr>');
+        continue;
+      }
+      html.push('<tr>' + cells.map(c => `<td>${inlineFormat(c.trim())}</td>`).join('') + '</tr>');
+      continue;
+    }
+
+    // Blockquotes
+    if (line.startsWith('>')) {
+      html.push(`<blockquote><p>${inlineFormat(line.replace(/^>\s*/, ''))}</p></blockquote>`);
+      continue;
+    }
+
+    // Unordered list items
+    const ulMatch = line.match(/^\s*[-*]\s+(.*)/);
+    if (ulMatch) {
+      if (!inList) {
+        inList = true;
+        listType = 'ul';
+        html.push('<ul>');
+      }
+      html.push(`<li>${inlineFormat(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    // Ordered list items
+    const olMatch = line.match(/^\s*\d+\.\s+(.*)/);
+    if (olMatch) {
+      if (!inList) {
+        inList = true;
+        listType = 'ol';
+        html.push('<ol>');
+      }
+      html.push(`<li>${inlineFormat(olMatch[1])}</li>`);
+      continue;
+    }
+
+    // Paragraph
+    html.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  // Close any open blocks
+  if (inCodeBlock) { html.push('</code></pre>'); }
+  if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); }
+  if (inTable) { html.push('</table>'); }
+
+  return html.join('\n');
+}
+
+/** Escapes HTML special characters. */
+function escapeHtmlChars(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Applies inline markdown formatting (bold, code, links). */
+function inlineFormat(text: string): string {
+  let result = escapeHtmlChars(text);
+  // Inline code (must come before bold to avoid conflicts)
+  result = result.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold
+  result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Links [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  return result;
 }

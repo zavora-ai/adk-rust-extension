@@ -81,14 +81,14 @@ describe('ConfigurationManager', () => {
     });
 
     /**
-     * Test: Default autoStartStudio is false.
-     * **Validates: Requirement 5.7**
+     * Test: Default autoStartStudio is true (Studio-first UX).
+     * **Validates: Requirement 10.1**
      */
-    it('returns false for default autoStartStudio', () => {
+    it('returns true for default autoStartStudio', () => {
       manager = new ConfigurationManager();
       
       const settings = manager.getSettings();
-      assert.strictEqual(settings.autoStartStudio, false, 'Default autoStartStudio should be false');
+      assert.strictEqual(settings.autoStartStudio, true, 'Default autoStartStudio should be true');
     });
 
     /**

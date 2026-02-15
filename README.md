@@ -4,10 +4,10 @@ A VS Code extension for building [ADK-Rust](https://github.com/adk-rust) agents.
 
 ## Features
 
-- **Project Scaffolding** — Create new ADK agent projects from four built-in templates
+- **Project Scaffolding** — Create new ADK agent projects from four built-in templates targeting adk-rust 0.3
 - **Environment Checking** — Verify your Rust toolchain, ADK Studio, and API keys in one click
 - **Build & Run** — Compile and run agents directly from the sidebar or command palette
-- **ADK Studio** — Launch the visual agent builder in a webview panel
+- **ADK Studio** — Launch the visual agent builder in a webview panel with automatic VS Code theme synchronization
 - **API Key Management** — Configure provider API keys without editing `.env` files manually
 - **Project Tree View** — Browse and manage ADK projects from the sidebar
 
@@ -28,20 +28,18 @@ rustc --version
 cargo --version
 ```
 
-### ADK Studio (optional)
+### ADK Studio (required)
 
-ADK Studio is the visual builder for ADK Rust agents. It is optional — you can create, build, and run agents without it.
+ADK Studio is the visual agent builder for ADK Rust. It powers the extension's main webview panel.
 
 See the [ADK Studio Installation](#adk-studio-installation) section below.
 
 ## ADK Studio Installation
 
-ADK Studio is the visual builder for ADK Rust agents.
-
 ### Install via Cargo
 
 ```sh
-cargo install adk-studio@0.3.0
+cargo install adk-studio
 ```
 
 ### Verify Installation
@@ -91,7 +89,9 @@ All settings are under the `adkRust` namespace. Open them quickly with **ADK Rus
 | `adkRust.adkStudioPath` | `string \| null` | `null` | Custom path to the `adk-studio` binary. Leave empty to use PATH. |
 | `adkRust.cargoPath` | `string \| null` | `null` | Custom path to the `cargo` binary. Leave empty to use PATH. |
 | `adkRust.rustcPath` | `string \| null` | `null` | Custom path to the `rustc` binary. Leave empty to use PATH. |
-| `adkRust.autoStartStudio` | `boolean` | `false` | Automatically start ADK Studio when the extension activates |
+| `adkRust.autoStartStudio` | `boolean` | `true` | Automatically start ADK Studio when the extension activates |
+| `adkRust.studioAutoOpen` | `boolean` | `true` | Automatically open the ADK Studio webview when ADK projects are detected |
+| `adkRust.sidebarWebview` | `boolean` | `true` | Use the rich sidebar webview instead of the native tree view |
 | `adkRust.verbosity` | `string` | `"normal"` | Output verbosity: `quiet`, `normal`, or `verbose` |
 
 ## Keybindings
@@ -106,10 +106,10 @@ You can bind additional shortcuts (e.g. for **Run Project**) via VS Code's keybi
 
 | Template | Description |
 |----------|-------------|
-| `simple-chat` | Basic conversational agent with LLM integration |
-| `tool-using-agent` | Agent with function tools and Google Search |
-| `multi-agent-workflow` | Sequential and parallel agent orchestration |
-| `graph-workflow` | LangGraph-style workflow with state management |
+| `simple-chat` | Basic conversational agent using `AgentBuilder` and `GeminiClient` |
+| `tool-using-agent` | Agent with `#[tool]` macro function tools and Google Search |
+| `multi-agent-workflow` | Sequential and parallel agent orchestration with `SequentialAgent` / `ParallelAgent` |
+| `graph-workflow` | State-machine workflow using `petgraph` with typed node/edge graphs |
 
 ## Troubleshooting
 

@@ -1,6 +1,6 @@
 /**
  * Multi-Agent Workflow template.
- * Sequential and parallel agent orchestration.
+ * Sequential agent orchestration with ADK-Rust.
  */
 
 import { TemplateContent } from './types';
@@ -25,9 +25,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-adk-rust = "0.2"
+adk-rust = "0.3"
 tokio = { version = "1", features = ["full"] }
-dotenv = "0.15"
+dotenvy = "0.15"
 `;
 }
 
@@ -36,50 +36,67 @@ dotenv = "0.15"
  */
 export function generateMainRs(projectName: string): string {
   const structName = toStructName(projectName);
-  return `//! ${structName} - A multi-agent workflow built with ADK-Rust
+  return `//! ${structName} — A multi-agent workflow built with ADK-Rust
 //!
-//! This demonstrates sequential and parallel agent orchestration.
+//! Demonstrates sequential agent orchestration using SequentialAgent.
 
 use adk_rust::prelude::*;
+use adk_rust::Launcher;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Load environment variables from .env file
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
-    // Create specialized agents
-    let researcher = Agent::builder()
-        .name("Researcher")
-        .model("gemini-2.0-flash")
-        .system_prompt("You are a research assistant. Gather and summarize information on topics.")
-        .build()?;
+    let api_key = std::env::var("GOOGLE_API_KEY")
+        .expect("GOOGLE_API_KEY must be set in .env file");
 
-    let writer = Agent::builder()
-        .name("Writer")
-        .model("gemini-2.0-flash")
-        .system_prompt("You are a skilled writer. Take research and create engaging content.")
-        .build()?;
+    let model = Arc::new(GeminiModel::new(&api_key, "gemini-2.5-flash")?);
 
-    let editor = Agent::builder()
-        .name("Editor")
-        .model("gemini-2.0-flash")
-        .system_prompt("You are an editor. Review and improve written content for clarity and style.")
-        .build()?;
+    // --- Specialist agents ---
 
-    // Create a sequential workflow: Research -> Write -> Edit
-    let workflow = SequentialWorkflow::builder()
-        .name("${structName}")
-        .agent(researcher)
-        .agent(writer)
-        .agent(editor)
-        .build()?;
+    let researcher: Arc<dyn Agent> = Arc::new(
+        LlmAgentBuilder::new("researcher")
+            .description("Gathers information on a topic")
+            .instruction(
+                "You are a research assistant. Given a topic, provide a concise summary \\
+                 of the key facts, recent developments, and important context.",
+            )
+            .model(model.clone())
+            .build()?,
+    );
 
-    // Run the workflow
-    let topic = "the benefits of Rust for AI development";
-    println!("Starting workflow for topic: {}", topic);
-    
-    let result = workflow.run(topic).await?;
-    println!("\\nFinal output:\\n{}", result);
+    let writer: Arc<dyn Agent> = Arc::new(
+        LlmAgentBuilder::new("writer")
+            .description("Writes engaging content from research")
+            .instruction(
+                "You are a skilled writer. Take the research provided and produce a clear, \\
+                 engaging article of about 300 words. Use a professional but approachable tone.",
+            )
+            .model(model.clone())
+            .build()?,
+    );
+
+    let editor: Arc<dyn Agent> = Arc::new(
+        LlmAgentBuilder::new("editor")
+            .description("Reviews and polishes written content")
+            .instruction(
+                "You are an editor. Review the article for clarity, grammar, and style. \\
+                 Output the improved version.",
+            )
+            .model(model.clone())
+            .build()?,
+    );
+
+    // --- Sequential pipeline: Research → Write → Edit ---
+
+    let pipeline = SequentialAgent::new(
+        "${structName}",
+        vec![researcher, writer, editor],
+    );
+
+    // Launch the pipeline in interactive console mode
+    Launcher::new(Arc::new(pipeline)).run().await?;
 
     Ok(())
 }
@@ -91,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
  */
 export function generateEnvExample(): string {
   return `# Google API Key for Gemini model access
-# Get your key at: https://makersuite.google.com/app/apikey
+# Get your key at: https://aistudio.google.com/apikey
 GOOGLE_API_KEY=your_google_api_key_here
 `;
 }
@@ -102,70 +119,61 @@ GOOGLE_API_KEY=your_google_api_key_here
 export function generateReadme(projectName: string): string {
   return `# ${projectName}
 
-A multi-agent workflow built with ADK-Rust.
+A multi-agent workflow built with [ADK-Rust](https://github.com/adk-rust/adk).
 
-## Features
+## How It Works
 
-- Sequential agent orchestration
-- Specialized agents (Researcher, Writer, Editor)
-- Pipeline-style processing
+Three specialist agents run in sequence:
+
+1. **Researcher** — gathers key facts on the topic
+2. **Writer** — turns the research into an article
+3. **Editor** — polishes the final output
+
+The output of each agent feeds into the next via \`SequentialAgent\`.
 
 ## Setup
 
-1. Copy \`.env.example\` to \`.env\`:
+1. Copy \`.env.example\` to \`.env\` and add your API key:
    \`\`\`bash
    cp .env.example .env
    \`\`\`
 
-2. Add your Google API key to \`.env\`:
-   \`\`\`
-   GOOGLE_API_KEY=your_actual_api_key
-   \`\`\`
-
-3. Build and run:
+2. Build and run:
    \`\`\`bash
    cargo run
    \`\`\`
 
-## Workflow Architecture
+3. Enter a topic (e.g. "benefits of Rust for AI") and watch the pipeline run.
 
-This template demonstrates a sequential workflow:
+## Parallel Execution
 
-1. **Researcher** - Gathers information on the topic
-2. **Writer** - Creates content from the research
-3. **Editor** - Polishes the final output
-
-## Customization
-
-### Adding Parallel Execution
+You can also run agents concurrently with \`ParallelAgent\`:
 
 \`\`\`rust
-let parallel = ParallelWorkflow::builder()
-    .agent(agent1)
-    .agent(agent2)
-    .build()?;
+let team = ParallelAgent::new("analysts", vec![analyst_a, analyst_b]);
 \`\`\`
 
-### Combining Sequential and Parallel
+Or combine both:
 
 \`\`\`rust
-let workflow = SequentialWorkflow::builder()
-    .agent(researcher)
-    .workflow(parallel_writers)  // Multiple writers in parallel
-    .agent(editor)
-    .build()?;
+let workflow = SequentialAgent::new("pipeline", vec![
+    Arc::new(ParallelAgent::new("research_team", vec![agent_a, agent_b])),
+    writer,
+    editor,
+]);
 \`\`\`
 
 ## Project Structure
 
-- \`src/main.rs\` - Workflow implementation
-- \`.env\` - Environment variables (API keys)
-- \`Cargo.toml\` - Rust dependencies
+- \`src/main.rs\` — Workflow definition
+- \`.env\` — API keys (not committed to git)
+- \`Cargo.toml\` — Rust dependencies
 
 ## Learn More
 
-- [ADK-Rust Documentation](https://github.com/adk-rust/adk)
-- [Gemini API Documentation](https://ai.google.dev/docs)
+- [ADK-Rust Docs](https://docs.rs/adk-rust)
+- [Workflow Agents](https://docs.rs/adk-agent)
+- [Gemini API](https://ai.google.dev/docs)
 `;
 }
 

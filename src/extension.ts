@@ -12,7 +12,6 @@ import * as path from 'path';
 import { ConfigurationManager } from './configManager';
 import {
   checkEnvironment,
-  getInstallationGuide,
   EnvironmentStatus,
   updateEnvKey,
 } from './environmentChecker';
@@ -27,6 +26,14 @@ import { build, run, cancel, isRunning, loadEnvFile, BuildConfig } from './build
 import { StatusManager } from './statusManager';
 import { ProjectTreeProvider, AdkProject, AdkTreeItem } from './projectTreeProvider';
 import { Logger, getLogger, disposeLogger, maskSensitiveData } from './logger';
+import { MessageBus } from './messageBus';
+import {
+  registerSidebarWithFallback,
+  attemptWebviewReload,
+  SidebarRegistrationResult,
+} from './sidebarFallback';
+import { registerSidebarMessageHandlers } from './sidebarMessageHandlers';
+import { toProjectCardData, toEnvironmentBadgeData } from './dataConverters';
 
 /** Reusable diagnostic collection for build errors — cleared on each build. */
 let buildDiagnosticCollection: vscode.DiagnosticCollection | null = null;
@@ -68,17 +75,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const projectTreeProvider = new ProjectTreeProvider();
 
-  // Register tree view
-  const treeView = vscode.window.createTreeView('adkProjects', {
-    treeDataProvider: projectTreeProvider,
-    showCollapseAll: true,
-  });
+  // Create MessageBus for sidebar↔Studio synchronization
+  const messageBus = new MessageBus();
+
+  // Conditionally register sidebar webview or native tree view
+  let sidebarResult: SidebarRegistrationResult;
+
+  if (settings.sidebarWebview) {
+    sidebarResult = registerSidebarWithFallback(context, messageBus, projectTreeProvider);
+    if (sidebarResult.sidebarProvider) {
+      messageBus.registerSidebar(sidebarResult.sidebarProvider);
+    }
+  } else {
+    const treeView = vscode.window.createTreeView('adkProjects', {
+      treeDataProvider: projectTreeProvider,
+      showCollapseAll: true,
+    });
+    sidebarResult = { isWebview: false, disposable: treeView, sidebarProvider: null };
+  }
 
   // Listen for settings changes
   const settingsDisposable = configManager.onSettingsChanged((newSettings) => {
     logger.debug('Settings changed');
 
-    // Update logger verbosity
     switch (newSettings.verbosity) {
       case 'quiet':
         logger.setLevel('error');
@@ -90,7 +109,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logger.setLevel('info');
     }
 
-    // Update studio manager config
     studioManager.updateConfig({
       port: newSettings.studioPort,
       binaryPath: newSettings.adkStudioPath,
@@ -124,6 +142,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   const refreshProjectsCmd = vscode.commands.registerCommand('adkRust.refreshProjects', () => {
+    if (sidebarResult && !sidebarResult.isWebview) {
+      sidebarResult = attemptWebviewReload(context, messageBus, projectTreeProvider, sidebarResult);
+      if (sidebarResult.isWebview && sidebarResult.sidebarProvider) {
+        messageBus.registerSidebar(sidebarResult.sidebarProvider);
+      }
+    }
     projectTreeProvider.refresh();
   });
 
@@ -144,7 +168,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     studioManager,
     statusManager,
     projectTreeProvider,
-    treeView,
+    messageBus,
+    sidebarResult.disposable,
     settingsDisposable,
     openStudioCmd,
     createProjectCmd,
@@ -157,18 +182,73 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openSettingsCmd
   );
 
-  // Auto-start studio if configured
-  if (settings.autoStartStudio) {
-    logger.info('Auto-starting ADK Studio server...');
+  // Set up sidebar message handlers if webview is active
+  if (sidebarResult.sidebarProvider) {
+    const env = await checkEnvironment({ adkStudioPath: settings.adkStudioPath });
+    const handlersDisposable = registerSidebarMessageHandlers(
+      sidebarResult.sidebarProvider,
+      messageBus,
+      projectTreeProvider,
+      configManager,
+      env.adkStudio.available,
+    );
+    context.subscriptions.push(handlersDisposable);
+
+    // Initial data load for sidebar
+    const projects = await projectTreeProvider.detectProjects();
+    const cardData = toProjectCardData(projects, env.adkStudio.available);
+    sidebarResult.sidebarProvider.updateProjects(cardData);
+    const badgeData = toEnvironmentBadgeData(env);
+    sidebarResult.sidebarProvider.updateEnvironmentStatus(badgeData);
+  }
+
+  // File watchers for Cargo.toml changes to trigger sidebar refresh
+  const cargoWatcher = vscode.workspace.createFileSystemWatcher('**/Cargo.toml');
+  const onCargoChange = async (): Promise<void> => {
+    if (sidebarResult?.sidebarProvider) {
+      const projects = await projectTreeProvider.detectProjects();
+      const env = await checkEnvironment({ adkStudioPath: settings.adkStudioPath });
+      const cardData = toProjectCardData(projects, env.adkStudio.available);
+      sidebarResult.sidebarProvider.updateProjects(cardData);
+    }
+    projectTreeProvider.refresh();
+  };
+  cargoWatcher.onDidCreate(onCargoChange);
+  cargoWatcher.onDidChange(onCargoChange);
+  cargoWatcher.onDidDelete(onCargoChange);
+  context.subscriptions.push(cargoWatcher);
+
+  // Auto-open Studio if conditions are met
+  if (settings.autoStartStudio && settings.studioAutoOpen) {
     try {
-      statusManager.showServerStarting(settings.studioPort);
-      await studioManager.startServer();
-      statusManager.showServerStatus(studioManager.getServerStatus());
+      const projects = projectTreeProvider.getProjects().length > 0
+        ? projectTreeProvider.getProjects()
+        : await projectTreeProvider.detectProjects();
+
+      if (projects.length > 0 && !studioManager.isDismissedInSession()) {
+        logger.info('Auto-opening ADK Studio...');
+        statusManager.showServerStarting(settings.studioPort);
+
+        try {
+          await studioManager.startServer();
+          statusManager.showServerStatus(studioManager.getServerStatus());
+        } catch (serverErr) {
+          const serverMsg = serverErr instanceof Error ? serverErr.message : String(serverErr);
+          logger.warn(`ADK Studio server failed to start during auto-open: ${serverMsg}`);
+          statusManager.showServerCrashed(serverMsg);
+          // Continue — the panel has error/retry UI
+        }
+
+        const panel = await studioManager.autoOpenStudio();
+        if (panel) {
+          messageBus.registerStudio(panel);
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.error('Failed to auto-start ADK Studio', err, {
+      logger.error('Failed to auto-open ADK Studio', err, {
         component: 'extension',
-        operation: 'autoStartStudio',
+        operation: 'autoOpenStudio',
       });
       statusManager.showServerCrashed(message);
     }
@@ -184,12 +264,10 @@ export async function deactivate(): Promise<void> {
   const logger = getLogger();
   logger.info('ADK Rust extension deactivating...');
 
-  // Cancel any running builds
   if (isRunning()) {
     cancel();
   }
 
-  // Clean up module-level resources
   if (buildDiagnosticCollection) {
     buildDiagnosticCollection.dispose();
     buildDiagnosticCollection = null;
@@ -199,14 +277,13 @@ export async function deactivate(): Promise<void> {
     runOutputChannel = null;
   }
 
-  // Components are disposed via context.subscriptions
-
-  // Dispose the logger last
   disposeLogger();
 }
 
 /**
  * Opens the ADK Studio in a webview panel.
+ * Attempts to start the server first, but opens the panel regardless
+ * so the user sees the loading/error UI.
  */
 async function openStudio(
   studioManager: StudioManager,
@@ -220,8 +297,15 @@ async function openStudio(
       logger.info('Starting ADK Studio server...');
       statusManager.showServerStarting(status.port);
 
-      await studioManager.startServer();
-      statusManager.showServerStatus(studioManager.getServerStatus());
+      try {
+        await studioManager.startServer();
+        statusManager.showServerStatus(studioManager.getServerStatus());
+      } catch (serverErr) {
+        const serverMsg = serverErr instanceof Error ? serverErr.message : String(serverErr);
+        logger.warn(`ADK Studio server failed to start: ${serverMsg}`);
+        statusManager.showServerCrashed(serverMsg);
+        // Continue to open the panel — it has its own error/retry UI
+      }
     }
 
     studioManager.createWebviewPanel();
@@ -234,17 +318,18 @@ async function openStudio(
     });
 
     const action = await statusManager.showError(
-      `Failed to start ADK Studio: ${message}`,
+      `Failed to open ADK Studio: ${message}`,
       'Install Instructions',
       'View Logs'
     );
 
     if (action === 'Install Instructions') {
-      const doc = await vscode.workspace.openTextDocument({
-        content: getInstallationGuide('adk-studio'),
-        language: 'markdown',
-      });
-      await vscode.window.showTextDocument(doc);
+      const ext = vscode.extensions.getExtension('zavora-ai.adk-rust-extension');
+      if (ext) {
+        const readmeUri = vscode.Uri.joinPath(ext.extensionUri, 'README.md');
+        const doc = await vscode.workspace.openTextDocument(readmeUri);
+        await vscode.window.showTextDocument(doc);
+      }
     } else if (action === 'View Logs') {
       logger.show();
     }
@@ -265,7 +350,6 @@ async function createProjectCommand(
     return;
   }
 
-  // Get project name
   const name = await vscode.window.showInputBox({
     title: 'Create ADK Project',
     prompt: 'Enter project name',
@@ -284,7 +368,6 @@ async function createProjectCommand(
     return;
   }
 
-  // Get template selection
   const templates = getTemplates();
   const defaultTemplate = configManager.getSetting('defaultTemplate');
 
@@ -307,13 +390,11 @@ async function createProjectCommand(
     return;
   }
 
-  // Check if directory exists
   const projectPath = path.join(workspaceFolder.uri.fsPath, name);
   const projectUri = vscode.Uri.file(projectPath);
 
   try {
     await vscode.workspace.fs.stat(projectUri);
-    // Directory exists
     const overwrite = await vscode.window.showWarningMessage(
       `Directory "${name}" already exists. Overwrite?`,
       { modal: true },
@@ -322,13 +403,11 @@ async function createProjectCommand(
     if (overwrite !== 'Overwrite') {
       return;
     }
-    // Remove existing directory
     await vscode.workspace.fs.delete(projectUri, { recursive: true });
   } catch {
     // Directory doesn't exist, which is fine
   }
 
-  // Create project with progress
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -348,16 +427,13 @@ async function createProjectCommand(
 
         logger.info(`Created ADK project: ${name} (${selectedTemplate.id})`);
 
-        // Open the project
         progress.report({ message: 'Opening project...' });
 
         const mainRsUri = vscode.Uri.file(path.join(projectPath, 'src', 'main.rs'));
         await vscode.window.showTextDocument(mainRsUri);
 
-        // Always refresh the tree view to display the new project
         projectTreeProvider.refresh();
 
-        // Show multi-action notification with post-creation guidance
         const action = await vscode.window.showInformationMessage(
           `ADK project "${name}" created successfully!`,
           'Set Up .env',
@@ -369,16 +445,11 @@ async function createProjectCommand(
           const envPath = path.join(projectPath, '.env');
 
           try {
-            // Check if .env.example exists
             await vscode.workspace.fs.stat(vscode.Uri.file(envExamplePath));
-
             try {
-              // Check if .env already exists
               await vscode.workspace.fs.stat(vscode.Uri.file(envPath));
-              // .env already exists — open it for editing instead
               await vscode.window.showTextDocument(vscode.Uri.file(envPath));
             } catch {
-              // .env doesn't exist — copy from .env.example
               await vscode.workspace.fs.copy(
                 vscode.Uri.file(envExamplePath),
                 vscode.Uri.file(envPath),
@@ -387,7 +458,6 @@ async function createProjectCommand(
               await vscode.window.showTextDocument(vscode.Uri.file(envPath));
             }
           } catch {
-            // .env.example doesn't exist
             vscode.window.showErrorMessage(
               'No .env.example found in project. Create a .env file manually.'
             );
@@ -458,7 +528,6 @@ async function buildCommand(
     } else {
       logger.warn(`Build failed: ${project.name}`);
 
-      // Show diagnostics in Problems panel
       if (result.diagnostics.length > 0) {
         if (!buildDiagnosticCollection) {
           buildDiagnosticCollection = vscode.languages.createDiagnosticCollection('adk-rust');
@@ -504,7 +573,6 @@ async function buildCommand(
           buildDiagnosticCollection.set(vscode.Uri.parse(uriStr), diags);
         }
       } else if (buildDiagnosticCollection) {
-        // Clear stale diagnostics on successful build with no errors
         buildDiagnosticCollection.clear();
       }
 
@@ -515,7 +583,6 @@ async function buildCommand(
       );
 
       if (action === 'View Output') {
-        // Show build output in a new document
         const doc = await vscode.workspace.openTextDocument({
           content: result.stderr || result.stdout,
           language: 'plaintext',
@@ -547,7 +614,6 @@ async function runCommand(
   logger: Logger,
   treeItem?: AdkTreeItem
 ): Promise<void> {
-  // Check if already running
   if (isRunning()) {
     const action = await vscode.window.showWarningMessage(
       'An agent is already running. Stop it first?',
@@ -576,7 +642,6 @@ async function runCommand(
 
   logger.info(`Running project: ${project.name}`);
 
-  // Reuse output channel for agent output
   if (!runOutputChannel) {
     runOutputChannel = vscode.window.createOutputChannel('ADK: Agent Output');
   }
@@ -584,8 +649,6 @@ async function runCommand(
   runOutputChannel.show();
 
   try {
-    // Load workspace-level and project-level environment variables.
-    // Project-level values win on key conflicts.
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(project.path));
     const workspaceEnvFromFile = workspaceFolder
       ? loadEnvFile(workspaceFolder.uri.fsPath)
@@ -687,7 +750,6 @@ async function checkEnvironmentCommand(
         issues.push(`ADK Studio: ${status.adkStudio.error || 'Not found'}`);
       }
 
-      // Include missing API keys in the issues list
       const missingKeys = status.apiKeys.filter(k => !k.present);
       for (const key of missingKeys) {
         issues.push(`API Key missing: ${key.name} (${key.envVar})`);
@@ -734,7 +796,6 @@ async function checkEnvironmentCommand(
             status.adkStudio.error ? `- Error: ${status.adkStudio.error}` : '',
           ];
 
-          // Add API keys section when an .env source was checked.
           if (status.apiKeys.length > 0) {
             details.push('');
             details.push(`## API Keys${workspaceFolder ? ` (${workspaceFolder.name})` : ''}`);
@@ -768,14 +829,7 @@ const SUPPORTED_API_KEYS = [
 /**
  * Handles the API key configuration command.
  *
- * Presents a QuickPick to select a provider, then an InputBox in password mode
- * to enter the key value. Reads the workspace `.env` file (creating it if needed),
- * updates the key using `updateEnvKey`, and writes back.
- *
  * @param logger - Logger instance for structured logging
- *
- * @example
- * await configureApiKeysCommand(logger);
  */
 async function configureApiKeysCommand(logger: Logger): Promise<void> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -784,7 +838,6 @@ async function configureApiKeysCommand(logger: Logger): Promise<void> {
     return;
   }
 
-  // Show QuickPick with supported providers
   const selected = await vscode.window.showQuickPick(
     SUPPORTED_API_KEYS.map(k => ({
       label: k.label,
@@ -801,7 +854,6 @@ async function configureApiKeysCommand(logger: Logger): Promise<void> {
     return;
   }
 
-  // Show InputBox in password mode for the key value
   const value = await vscode.window.showInputBox({
     title: `Enter ${selected.label}`,
     prompt: `Enter the value for ${selected.envVar}`,
@@ -822,30 +874,22 @@ async function configureApiKeysCommand(logger: Logger): Promise<void> {
   const envPath = path.join(workspaceFolder.uri.fsPath, '.env');
   const envUri = vscode.Uri.file(envPath);
 
-  // Read existing .env content or start with empty string
   let envContent = '';
   try {
     const existingContent = await vscode.workspace.fs.readFile(envUri);
     envContent = Buffer.from(existingContent).toString('utf-8');
   } catch {
-    // .env doesn't exist yet — will be created
     logger.info('.env file not found, creating new one');
   }
 
-  // Update the key in the .env content
   const updatedContent = updateEnvKey(envContent, selected.envVar, value);
-
-  // Write back to .env
   await vscode.workspace.fs.writeFile(envUri, Buffer.from(updatedContent, 'utf-8'));
 
-  // Log with masked value for security
   const maskedLog = maskSensitiveData({ [selected.envVar]: value });
   logger.info(`Updated API key: ${JSON.stringify(maskedLog)}`);
 
   vscode.window.showInformationMessage(`${selected.label} has been configured in .env`);
 }
-
-
 
 /**
  * Prompts user to select a project if multiple exist.
@@ -865,7 +909,6 @@ async function selectProject(
     return projects[0];
   }
 
-  // Multiple projects - prompt for selection
   const items = projects.map((p) => ({
     label: p.name,
     description: p.path,

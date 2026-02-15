@@ -1,6 +1,6 @@
 /**
  * Tool-Using Agent template.
- * Agent with function tools and Google Search capabilities.
+ * Agent with custom FunctionTool capabilities using ADK-Rust.
  */
 
 import { TemplateContent } from './types';
@@ -8,7 +8,7 @@ import { TemplateContent } from './types';
 /**
  * Required API keys for the tool-using-agent template.
  */
-export const REQUIRED_API_KEYS = ['GOOGLE_API_KEY', 'GOOGLE_SEARCH_API_KEY'];
+export const REQUIRED_API_KEYS = ['GOOGLE_API_KEY'];
 
 /**
  * ADK crates required for the tool-using-agent template.
@@ -25,9 +25,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-adk-rust = "0.2"
+adk-rust = "0.3"
 tokio = { version = "1", features = ["full"] }
-dotenv = "0.15"
+dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 `;
@@ -38,54 +38,80 @@ serde_json = "1"
  */
 export function generateMainRs(projectName: string): string {
   const structName = toStructName(projectName);
-  return `//! ${structName} - A tool-using agent built with ADK-Rust
+  return `//! ${structName} — A tool-using agent built with ADK-Rust
 //!
-//! This agent demonstrates how to use function tools and external APIs.
+//! Demonstrates how to create custom FunctionTools and attach them to an agent.
 
 use adk_rust::prelude::*;
-use serde::{Deserialize, Serialize};
+use adk_rust::Launcher;
+use adk_rust::serde_json::{json, Value};
 
-/// Input for the calculator tool
-#[derive(Debug, Serialize, Deserialize)]
-struct CalculatorInput {
-    operation: String,
-    a: f64,
-    b: f64,
+/// A weather lookup tool. Replace the body with a real API call.
+async fn get_weather(_ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+    let city = args["city"].as_str().unwrap_or("Unknown");
+    // TODO: call a real weather API here
+    Ok(json!({
+        "city": city,
+        "temperature_f": 72,
+        "condition": "Sunny"
+    }))
 }
 
-/// A simple calculator tool
-fn calculator(input: CalculatorInput) -> Result<f64, String> {
-    match input.operation.as_str() {
-        "add" => Ok(input.a + input.b),
-        "subtract" => Ok(input.a - input.b),
-        "multiply" => Ok(input.a * input.b),
-        "divide" => {
-            if input.b == 0.0 {
-                Err("Cannot divide by zero".to_string())
-            } else {
-                Ok(input.a / input.b)
-            }
-        }
-        _ => Err(format!("Unknown operation: {}", input.operation)),
-    }
+/// A simple calculator tool.
+async fn calculate(_ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+    let a = args["a"].as_f64().unwrap_or(0.0);
+    let b = args["b"].as_f64().unwrap_or(0.0);
+    let op = args["op"].as_str().unwrap_or("add");
+
+    let result = match op {
+        "add" => a + b,
+        "sub" => a - b,
+        "mul" => a * b,
+        "div" if b != 0.0 => a / b,
+        "div" => return Ok(json!({"error": "division by zero"})),
+        _ => return Ok(json!({"error": format!("unknown op: {}", op)})),
+    };
+
+    Ok(json!({"result": result}))
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Load environment variables from .env file
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
-    // Create a tool-using agent
-    let agent = Agent::builder()
-        .name("${structName}")
-        .model("gemini-2.0-flash")
-        .system_prompt("You are a helpful assistant with access to a calculator tool. Use it when asked to perform mathematical operations.")
-        .tool("calculator", "Performs basic arithmetic operations (add, subtract, multiply, divide)", calculator)
+    let api_key = std::env::var("GOOGLE_API_KEY")
+        .expect("GOOGLE_API_KEY must be set in .env file");
+
+    let model = Arc::new(GeminiModel::new(&api_key, "gemini-2.5-flash")?);
+
+    // Create tools
+    let weather_tool = FunctionTool::new(
+        "get_weather",
+        "Get current weather for a city. Args: {city: string}",
+        get_weather,
+    );
+
+    let calc_tool = FunctionTool::new(
+        "calculate",
+        "Basic arithmetic. Args: {a: number, b: number, op: add|sub|mul|div}",
+        calculate,
+    );
+
+    // Build the agent with tools
+    let agent = LlmAgentBuilder::new("${structName}")
+        .description("An assistant with weather and calculator tools")
+        .instruction(
+            "You are a helpful assistant. Use the get_weather tool when asked about weather, \\
+             and the calculate tool for math. Always show your reasoning.",
+        )
+        .model(model)
+        .tool(Arc::new(weather_tool))
+        .tool(Arc::new(calc_tool))
         .build()?;
 
-    // Run the agent with a calculation request
-    let response = agent.run("What is 42 multiplied by 17?").await?;
-    println!("{}", response);
+    // Interactive console — try: "What's the weather in Tokyo?"
+    Launcher::new(Arc::new(agent)).run().await?;
 
     Ok(())
 }
@@ -97,12 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
  */
 export function generateEnvExample(): string {
   return `# Google API Key for Gemini model access
-# Get your key at: https://makersuite.google.com/app/apikey
+# Get your key at: https://aistudio.google.com/apikey
 GOOGLE_API_KEY=your_google_api_key_here
-
-# Google Search API Key (optional, for web search capabilities)
-# Get your key at: https://developers.google.com/custom-search/v1/introduction
-GOOGLE_SEARCH_API_KEY=your_google_search_api_key_here
 `;
 }
 
@@ -112,56 +134,56 @@ GOOGLE_SEARCH_API_KEY=your_google_search_api_key_here
 export function generateReadme(projectName: string): string {
   return `# ${projectName}
 
-A tool-using agent built with ADK-Rust.
+A tool-using agent built with [ADK-Rust](https://github.com/adk-rust/adk).
 
 ## Features
 
-- Function tool integration
-- Calculator tool example
-- Extensible tool system
+- Custom \`FunctionTool\` integration (weather + calculator)
+- Automatic tool execution loop — the LLM decides when to call tools
+- Easy to extend with your own async functions
 
 ## Setup
 
-1. Copy \`.env.example\` to \`.env\`:
+1. Copy \`.env.example\` to \`.env\` and add your API key:
    \`\`\`bash
    cp .env.example .env
    \`\`\`
 
-2. Add your API keys to \`.env\`:
-   \`\`\`
-   GOOGLE_API_KEY=your_actual_api_key
-   GOOGLE_SEARCH_API_KEY=your_search_api_key  # Optional
-   \`\`\`
-
-3. Build and run:
+2. Build and run:
    \`\`\`bash
    cargo run
    \`\`\`
 
-## Adding Custom Tools
+3. Try prompts like:
+   - "What's the weather in Paris?"
+   - "What is 42 * 17?"
 
-To add your own tools, define a function and register it with the agent:
+## Adding Your Own Tools
+
+Define an async function and wrap it with \`FunctionTool\`:
 
 \`\`\`rust
-fn my_tool(input: MyInput) -> Result<MyOutput, String> {
-    // Tool implementation
+async fn my_tool(_ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value> {
+    // your logic here
+    Ok(json!({"result": "done"}))
 }
 
-let agent = Agent::builder()
-    .tool("my_tool", "Description of what it does", my_tool)
-    .build()?;
+let tool = FunctionTool::new("my_tool", "Description for the LLM", my_tool);
 \`\`\`
+
+Then add it to the agent with \`.tool(Arc::new(tool))\`.
 
 ## Project Structure
 
-- \`src/main.rs\` - Main agent implementation with tools
-- \`.env\` - Environment variables (API keys)
-- \`Cargo.toml\` - Rust dependencies
+- \`src/main.rs\` — Agent and tool definitions
+- \`.env\` — API keys (not committed to git)
+- \`Cargo.toml\` — Rust dependencies
 
 ## Learn More
 
-- [ADK-Rust Documentation](https://github.com/adk-rust/adk)
-- [Gemini API Documentation](https://ai.google.dev/docs)
+- [ADK-Rust Docs](https://docs.rs/adk-rust)
+- [FunctionTool API](https://docs.rs/adk-tool)
+- [Gemini API](https://ai.google.dev/docs)
 `;
 }
 

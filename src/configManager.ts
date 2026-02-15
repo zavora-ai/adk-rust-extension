@@ -28,6 +28,10 @@ export interface ExtensionSettings {
   autoStartStudio: boolean;
   /** Output channel verbosity level */
   verbosity: VerbosityLevel;
+  /** Whether to auto-open Studio webview on activation when ADK projects are detected (default: true) */
+  studioAutoOpen: boolean;
+  /** Whether to use the sidebar webview or native tree view (default: true) */
+  sidebarWebview: boolean;
 }
 
 /**
@@ -39,8 +43,10 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   adkStudioPath: null,
   cargoPath: null,
   rustcPath: null,
-  autoStartStudio: false,
+  autoStartStudio: true,
   verbosity: 'normal',
+  studioAutoOpen: true,
+  sidebarWebview: true,
 };
 
 /**
@@ -114,6 +120,8 @@ export class ConfigurationManager implements vscode.Disposable {
       rustcPath: config.get<string | null>('rustcPath', DEFAULT_SETTINGS.rustcPath),
       autoStartStudio: config.get<boolean>('autoStartStudio', DEFAULT_SETTINGS.autoStartStudio),
       verbosity: config.get<VerbosityLevel>('verbosity', DEFAULT_SETTINGS.verbosity),
+      studioAutoOpen: config.get<boolean>('studioAutoOpen', DEFAULT_SETTINGS.studioAutoOpen),
+      sidebarWebview: config.get<boolean>('sidebarWebview', DEFAULT_SETTINGS.sidebarWebview),
     };
 
     return { ...this.cachedSettings };

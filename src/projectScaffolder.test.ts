@@ -309,7 +309,7 @@ describe('ProjectScaffolder', () => {
 
             // Property: Output must return Result type
             assert.ok(
-              mainRs.includes('Result<(), Box<dyn std::error::Error>>'),
+              mainRs.includes('Result<()>') || mainRs.includes('Result<(), Box<dyn std::error::Error>>'),
               'main function should return Result type'
             );
           }
@@ -357,7 +357,7 @@ describe('ProjectScaffolder', () => {
 
             // Property: All templates should load .env file
             assert.ok(
-              mainRs.includes('dotenv::dotenv()'),
+              mainRs.includes('dotenvy::dotenv()'),
               `main.rs for template "${template}" should load .env file`
             );
           }
@@ -452,15 +452,15 @@ describe('ProjectScaffolder', () => {
           async (template: TemplateType, projectName: string) => {
             const mainRs = generateMainRs(template, projectName);
 
-            // Property: Should use Agent builder pattern
+            // Property: Should use LlmAgentBuilder or graph node functions
             assert.ok(
-              mainRs.includes('Agent::builder()'),
-              `main.rs for template "${template}" should use Agent::builder()`
+              mainRs.includes('LlmAgentBuilder::new(') || mainRs.includes('add_node_fn('),
+              `main.rs for template "${template}" should use LlmAgentBuilder::new() or add_node_fn()`
             );
 
-            // Property: Should specify a Gemini model
+            // Property: Should specify a Gemini model or be a graph workflow
             assert.ok(
-              mainRs.includes('gemini'),
+              mainRs.includes('gemini') || template === 'graph-workflow',
               `main.rs for template "${template}" should use a Gemini model`
             );
           }

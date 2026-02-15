@@ -262,7 +262,7 @@ export function getInstallationGuide(tool: string): string {
         '## Install via Cargo',
         '',
         '```sh',
-        'cargo install adk-studio@0.3.0',
+        'cargo install adk-studio',
         '```',
         '',
         '## Verify Installation',

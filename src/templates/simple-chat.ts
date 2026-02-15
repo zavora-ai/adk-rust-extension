@@ -1,6 +1,6 @@
 /**
  * Simple Chat Agent template.
- * Basic conversational agent with LLM integration.
+ * Basic conversational agent with LLM integration using ADK-Rust.
  */
 
 import { TemplateContent } from './types';
@@ -25,9 +25,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-adk-rust = "0.2"
+adk-rust = "0.3"
 tokio = { version = "1", features = ["full"] }
-dotenv = "0.15"
+dotenvy = "0.15"
 `;
 }
 
@@ -36,27 +36,32 @@ dotenv = "0.15"
  */
 export function generateMainRs(projectName: string): string {
   const structName = toStructName(projectName);
-  return `//! ${structName} - A simple chat agent built with ADK-Rust
+  return `//! ${structName} — A simple chat agent built with ADK-Rust
 //!
-//! This agent demonstrates basic conversational capabilities using an LLM.
+//! Launches an interactive console session powered by Gemini.
 
 use adk_rust::prelude::*;
+use adk_rust::Launcher;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Load environment variables from .env file
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
-    // Create a simple chat agent
-    let agent = Agent::builder()
-        .name("${structName}")
-        .model("gemini-2.0-flash")
-        .system_prompt("You are a helpful assistant.")
+    let api_key = std::env::var("GOOGLE_API_KEY")
+        .expect("GOOGLE_API_KEY must be set in .env file");
+
+    let model = Arc::new(GeminiModel::new(&api_key, "gemini-2.5-flash")?);
+
+    // Build a simple chat agent
+    let agent = LlmAgentBuilder::new("${structName}")
+        .description("A helpful AI assistant")
+        .instruction("You are a friendly assistant. Answer questions concisely and helpfully.")
+        .model(model)
         .build()?;
 
-    // Run the agent with a sample prompt
-    let response = agent.run("Hello! How can you help me today?").await?;
-    println!("{}", response);
+    // Run in interactive console mode — type messages and get responses
+    Launcher::new(Arc::new(agent)).run().await?;
 
     Ok(())
 }
@@ -68,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
  */
 export function generateEnvExample(): string {
   return `# Google API Key for Gemini model access
-# Get your key at: https://makersuite.google.com/app/apikey
+# Get your key at: https://aistudio.google.com/apikey
 GOOGLE_API_KEY=your_google_api_key_here
 `;
 }
@@ -79,42 +84,39 @@ GOOGLE_API_KEY=your_google_api_key_here
 export function generateReadme(projectName: string): string {
   return `# ${projectName}
 
-A simple chat agent built with ADK-Rust.
+A simple chat agent built with [ADK-Rust](https://github.com/adk-rust/adk).
 
 ## Setup
 
-1. Copy \`.env.example\` to \`.env\`:
+1. Copy \`.env.example\` to \`.env\` and add your API key:
    \`\`\`bash
    cp .env.example .env
+   # Edit .env and set GOOGLE_API_KEY
    \`\`\`
 
-2. Add your Google API key to \`.env\`:
-   \`\`\`
-   GOOGLE_API_KEY=your_actual_api_key
-   \`\`\`
-
-3. Build and run:
+2. Build and run:
    \`\`\`bash
    cargo run
    \`\`\`
 
+   This starts an interactive console session. Type a message and press Enter.
+
 ## Project Structure
 
-- \`src/main.rs\` - Main agent implementation
-- \`.env\` - Environment variables (API keys)
-- \`Cargo.toml\` - Rust dependencies
+- \`src/main.rs\` — Agent definition and launcher
+- \`.env\` — API keys (not committed to git)
+- \`Cargo.toml\` — Rust dependencies
 
 ## Customization
 
-Edit \`src/main.rs\` to customize:
-- The agent's system prompt
-- The model used (default: gemini-2.0-flash)
-- The conversation flow
+Open \`src/main.rs\` to change:
+- The agent's instruction (system prompt)
+- The model (default: \`gemini-2.5-flash\`)
 
 ## Learn More
 
-- [ADK-Rust Documentation](https://github.com/adk-rust/adk)
-- [Gemini API Documentation](https://ai.google.dev/docs)
+- [ADK-Rust Docs](https://docs.rs/adk-rust)
+- [Gemini API](https://ai.google.dev/docs)
 `;
 }
 

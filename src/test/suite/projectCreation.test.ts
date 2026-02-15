@@ -200,8 +200,8 @@ suite('Project Creation Integration Tests', () => {
       assert.ok(content.includes('fn main'), 'main.rs should contain main function');
       assert.ok(content.includes('#[tokio::main]'), 'main.rs should use tokio::main attribute');
       assert.ok(content.includes('use adk_rust::prelude::*'), 'main.rs should import adk prelude');
-      assert.ok(content.includes('dotenv::dotenv()'), 'main.rs should load .env file');
-      assert.ok(content.includes('Agent::builder()'), 'main.rs should create an Agent');
+      assert.ok(content.includes('dotenvy::dotenv()'), 'main.rs should load .env file');
+      assert.ok(content.includes('LlmAgentBuilder::new('), 'main.rs should create an Agent');
     });
 
     test('.env.example contains required API keys', async () => {
@@ -292,7 +292,7 @@ suite('Project Creation Integration Tests', () => {
       assert.ok(content.includes('serde'), 'tool-using-agent should include serde');
     });
 
-    test('tool-using-agent .env.example includes search API key', async () => {
+    test('tool-using-agent .env.example includes API key', async () => {
       const config: ProjectConfig = {
         name: 'tool-env-test',
         template: 'tool-using-agent',
@@ -305,9 +305,8 @@ suite('Project Creation Integration Tests', () => {
       const envPath = path.join(tempDir, 'tool-env-test', '.env.example');
       const content = fs.readFileSync(envPath, 'utf-8');
 
-      // Tool-using agent needs search API key
+      // Tool-using agent needs Google API key
       assert.ok(content.includes('GOOGLE_API_KEY'), '.env.example should contain GOOGLE_API_KEY');
-      assert.ok(content.includes('GOOGLE_SEARCH_API_KEY'), '.env.example should contain GOOGLE_SEARCH_API_KEY');
     });
   });
 

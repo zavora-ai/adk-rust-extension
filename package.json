@@ -2,7 +2,7 @@
   "name": "adk-rust-extension",
   "displayName": "ADK Rust",
   "description": "VS Code extension for building ADK-Rust agents.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "zavora-ai",
   "repository": {
     "type": "git",
@@ -81,6 +81,7 @@
     "views": {
       "adk-rust": [
         {
+          "type": "webview",
           "id": "adkProjects",
           "name": "ADK Projects",
           "contextualTitle": "ADK Rust Projects"
@@ -95,6 +96,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "adkRust.openStudio",
+          "when": "view == adkProjects",
+          "group": "navigation"
+        },
         {
           "command": "adkRust.refreshProjects",
           "when": "view == adkProjects",
@@ -195,8 +201,18 @@
         },
         "adkRust.autoStartStudio": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Automatically start the ADK Studio server when the extension activates."
+        },
+        "adkRust.studioAutoOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the ADK Studio webview when ADK projects are detected in the workspace."
+        },
+        "adkRust.sidebarWebview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the rich sidebar webview instead of the native tree view for ADK projects."
         },
         "adkRust.verbosity": {
           "type": "string",
